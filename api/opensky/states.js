@@ -1,5 +1,27 @@
 const OPENSKY_TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
 const OPENSKY_STATES_URL = "https://opensky-network.org/api/states/all";
+const HTTP_TIMEOUT_MS = 4500;
+
+let tokenCache = {
+  accessToken: null,
+  expiresAtMs: 0,
+};
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = HTTP_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new Error(`Request timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 function setCorsHeaders(req, res) {
   const allowedOrigin = process.env.ALLOWED_ORIGIN;
@@ -31,13 +53,17 @@ function parseBounds(query) {
 }
 
 async function fetchOpenSkyAccessToken(clientId, clientSecret) {
+  if (tokenCache.accessToken && Date.now() < tokenCache.expiresAtMs) {
+    return tokenCache.accessToken;
+  }
+
   const body = new URLSearchParams({
     grant_type: "client_credentials",
     client_id: clientId,
     client_secret: clientSecret,
   });
 
-  const response = await fetch(OPENSKY_TOKEN_URL, {
+  const response = await fetchWithTimeout(OPENSKY_TOKEN_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -55,7 +81,14 @@ async function fetchOpenSkyAccessToken(clientId, clientSecret) {
     throw new Error("Token response missing access_token");
   }
 
-  return data.access_token;
+  const expiresInSec = Number(data.expires_in);
+  const ttlMs = Number.isFinite(expiresInSec) ? Math.max(0, (expiresInSec - 30) * 1000) : 60000;
+  tokenCache = {
+    accessToken: data.access_token,
+    expiresAtMs: Date.now() + ttlMs,
+  };
+
+  return tokenCache.accessToken;
 }
 
 module.exports = async (req, res) => {
@@ -96,7 +129,7 @@ module.exports = async (req, res) => {
       lomax: String(bounds.lomax),
     });
 
-    const upstreamResponse = await fetch(`${OPENSKY_STATES_URL}?${params.toString()}`, {
+    const upstreamResponse = await fetchWithTimeout(`${OPENSKY_STATES_URL}?${params.toString()}`, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },

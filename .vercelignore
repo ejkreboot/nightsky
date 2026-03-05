@@ -1,0 +1,4 @@
+# Deploy API only from this project.
+*
+!api/**
+!vercel.json
