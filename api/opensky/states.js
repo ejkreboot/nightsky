@@ -1,6 +1,6 @@
 const OPENSKY_TOKEN_URL = "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token";
 const OPENSKY_STATES_URL = "https://opensky-network.org/api/states/all";
-const HTTP_TIMEOUT_MS = 4500;
+const HTTP_TIMEOUT_MS = Number(process.env.OPENSKY_HTTP_TIMEOUT_MS || 12000);
 
 let tokenCache = {
   accessToken: null,
@@ -21,6 +21,23 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = HTTP_TIMEOUT_MS) 
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+async function fetchWithRetry(url, options = {}, timeoutMs = HTTP_TIMEOUT_MS, maxRetries = 1) {
+  let lastError;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await fetchWithTimeout(url, options, timeoutMs);
+    } catch (error) {
+      lastError = error;
+      if (!String(error.message || "").includes("timed out") || attempt === maxRetries) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError;
 }
 
 function setCorsHeaders(req, res) {
@@ -63,13 +80,13 @@ async function fetchOpenSkyAccessToken(clientId, clientSecret) {
     client_secret: clientSecret,
   });
 
-  const response = await fetchWithTimeout(OPENSKY_TOKEN_URL, {
+  const response = await fetchWithRetry(OPENSKY_TOKEN_URL, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body,
-  });
+  }, HTTP_TIMEOUT_MS, 1);
 
   if (!response.ok) {
     const text = await response.text();
@@ -129,11 +146,11 @@ module.exports = async (req, res) => {
       lomax: String(bounds.lomax),
     });
 
-    const upstreamResponse = await fetchWithTimeout(`${OPENSKY_STATES_URL}?${params.toString()}`, {
+    const upstreamResponse = await fetchWithRetry(`${OPENSKY_STATES_URL}?${params.toString()}`, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
-    });
+    }, HTTP_TIMEOUT_MS, 1);
 
     if (!upstreamResponse.ok) {
       const text = await upstreamResponse.text();
