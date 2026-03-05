@@ -5,6 +5,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Night Sky</title>
+<script src="https://cdn.jsdelivr.net/npm/satellite.js@5/dist/satellite.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&family=Outfit:wght@200;300;400;600&display=swap');
 
@@ -340,6 +341,7 @@
   <button class="ctrl-btn" id="btn-connames" onclick="toggleConNames()">Constellations</button>
   <button class="ctrl-btn active" id="btn-planets" onclick="togglePlanets()">Planets</button>
   <button class="ctrl-btn active" id="btn-milkyway" onclick="toggleMilkyWay()">Milky Way</button>
+  <button class="ctrl-btn active" id="btn-sats" onclick="toggleSatellites()">Satellites</button>
   <button class="ctrl-btn" id="btn-temp" onclick="toggleTemp()">Temp</button>
   <div class="mag-slider-wrap">
     <label class="mag-label" for="mag-slider">Mag ≤ <span id="mag-value">5.0</span></label>
@@ -695,7 +697,7 @@ function bvToRGB(bv) {
 let canvas, ctx;
 let W, H;
 let lat = 42.96, lon = -85.66; // Grand Rapids default
-let centerAz = 0, centerAlt = 45;
+let centerAz = 0, centerAlt = 55;
 let fov = (window.innerWidth <= 540 && window.innerHeight > window.innerWidth) ? 40 : 60;
 let showLines = true, showLabels = true, showConNames = false, showPlanets = true, showGrid = true, showTemp = false, showMilkyWay = true;
 let magLimit = 5.0;
@@ -722,12 +724,13 @@ const planetTextureState = Object.create(null);
 
 const MILKYWAY_TUNING = {
   baseArcWidth: 60,
-  baseBlur: 80,
+  baseBlur: 120,
   baseOpacity: 0.20,
   cloudStrength: 2.0,
   dustStrength: 5.0,
   microStarDensity: 3.0
 };
+
 
 function getMilkyWayRenderTuning() {
   const isSmallDisplay = window.innerWidth <= 540;
@@ -746,6 +749,12 @@ function getMilkyWayRenderTuning() {
 // Precomputed star screen positions for hit testing
 let starScreenPos = [];
 let planetScreenPos = [];
+let satScreenPos = [];
+
+// Satellite tracking state
+let showSatellites = true;
+let satData = [];        // { name, satrec }
+let satFetchDone = false;
 
 function getSkyNow() {
   if (skyTimeAnchorMs === null) return new Date();
@@ -879,6 +888,7 @@ function init() {
   loadMoonTexture();
   buildPlanetSprites();
   loadPlanetTextures();
+  buildSatSprites();
   resize();
   window.addEventListener('resize', resize);
 
@@ -933,6 +943,7 @@ function applyManualLocation() {
 }
 
 function startRendering() {
+  fetchSatelliteTLEs();
   render();
 }
 
@@ -1273,6 +1284,12 @@ function doRender() {
         ctx.fillText(p.name, sp.x + planetImageRadius + (isMoon ? 7 : 5), sp.y + 4);
       }
     }
+  }
+
+  // Satellites
+  satScreenPos = [];
+  if (showSatellites && satData.length > 0) {
+    drawSatellites(now, lst, cx, cy, radius);
   }
 
   // Cardinal directions
@@ -1620,7 +1637,7 @@ function onMouseMove(e) {
     const dx = e.clientX - lastMX;
     const dy = e.clientY - lastMY;
     centerAz = (centerAz + dx * 0.3 + 360) % 360;
-    centerAlt = Math.max(-5, Math.min(60, centerAlt - dy * 0.3));
+    centerAlt = Math.max(-5, Math.min(60, centerAlt + dy * 0.3));
     lastMX = e.clientX;
     lastMY = e.clientY;
     render();
@@ -1662,7 +1679,7 @@ function onTouchMove(e) {
     const dx = e.touches[0].clientX - lastMX;
     const dy = e.touches[0].clientY - lastMY;
     centerAz = (centerAz + dx * 0.3 + 360) % 360;
-    centerAlt = Math.max(-5, Math.min(50, centerAlt - dy * 0.3));
+    centerAlt = Math.max(-5, Math.min(60, centerAlt + dy * 0.3));
     lastMX = e.touches[0].clientX;
     lastMY = e.touches[0].clientY;
     render();
@@ -1681,7 +1698,17 @@ function updateTooltip(mx, my) {
   const tooltip = document.getElementById('tooltip');
   let closest = null, closestDist = 20;
 
-  // Check planets first
+  // Check satellites first
+  for (const sp of satScreenPos) {
+    if (!sp) continue;
+    const d = Math.sqrt((sp.x - mx) ** 2 + (sp.y - my) ** 2);
+    if (d < closestDist) {
+      closest = { type: 'satellite', data: sp };
+      closestDist = d;
+    }
+  }
+
+  // Check planets
   for (const pp of planetScreenPos) {
     if (!pp) continue;
     const d = Math.sqrt((pp.x - mx) ** 2 + (pp.y - my) ** 2);
@@ -1707,7 +1734,17 @@ function updateTooltip(mx, my) {
     tooltip.style.left = (mx + 16) + 'px';
     tooltip.style.top = (my - 10) + 'px';
 
-    if (closest.type === 'planet') {
+    if (closest.type === 'satellite') {
+      const s = closest.data;
+      const typeLabel = SAT_TYPE_LABELS[s.satType] || 'Satellite';
+      const displayName = s.name === 'ISS (ZARYA)' ? 'ISS' : s.name;
+      document.getElementById('tip-name').textContent = `🛰 ${displayName}`;
+      document.getElementById('tip-detail').innerHTML =
+        `${typeLabel}<br>` +
+        `Alt ${s.alt.toFixed(1)}° Az ${s.az.toFixed(1)}°<br>` +
+        `Range ${Math.round(s.rangeSat).toLocaleString()} km<br>` +
+        `Orbit alt ${Math.round(s.satAltKm).toLocaleString()} km`;
+    } else if (closest.type === 'planet') {
       const p = closest.data;
       document.getElementById('tip-name').textContent = `${p.symbol} ${p.name}`;
       if (p.name === 'Moon') {
@@ -1792,6 +1829,305 @@ function toggleMilkyWay() {
   showMilkyWay = !showMilkyWay;
   document.getElementById('btn-milkyway').classList.toggle('active', showMilkyWay);
   render();
+}
+
+function toggleSatellites() {
+  showSatellites = !showSatellites;
+  document.getElementById('btn-sats').classList.toggle('active', showSatellites);
+  render();
+}
+
+// ═══════════════════════════════════════════
+// SATELLITE TRACKING (TLE + SGP4)
+// ═══════════════════════════════════════════
+
+// --- Satellite type classification ---
+function classifySatellite(name) {
+  const n = name.toUpperCase();
+  if (n.includes('ISS') || n === 'ZARYA') return 'iss';
+  if (n.includes('TIANHE') || n.includes('TIANGONG') || n.includes('CSS') || n.includes('MENGTIAN') || n.includes('WENTIAN')) return 'station';
+  if (n.includes('STARLINK')) return 'starlink';
+  if (n.includes('ONEWEB')) return 'oneweb';
+  if (n.includes('HST') || n.includes('HUBBLE')) return 'hubble';
+  if (n.includes('IRIDIUM')) return 'iridium';
+  if (/ R\/B| DEB/i.test(n) || n.includes('ROCKET') || n.includes('DEBRIS')) return 'debris';
+  return 'generic';
+}
+
+const SAT_TYPE_LABELS = {
+  iss: 'Space Station (ISS)',
+  station: 'Space Station',
+  starlink: 'Starlink',
+  oneweb: 'OneWeb',
+  hubble: 'Hubble Space Telescope',
+  iridium: 'Iridium',
+  debris: 'Rocket Body / Debris',
+  generic: 'Satellite'
+};
+
+// --- Pre-rendered satellite silhouette sprites ---
+const satSpriteCache = Object.create(null);
+
+function buildSatSprites() {
+  const types = ['iss','station','starlink','oneweb','hubble','iridium','debris','generic'];
+  const sz = 64; // sprite canvas size
+  for (const type of types) {
+    const c = document.createElement('canvas');
+    c.width = sz; c.height = sz;
+    const g = c.getContext('2d');
+    g.translate(sz / 2, sz / 2);
+
+    // Draw outline silhouette – light gold stroke, no background circle
+    g.strokeStyle = 'rgba(255, 220, 140, 0.9)';
+    g.fillStyle = 'none';
+    g.lineWidth = 1.0;
+    g.lineJoin = 'round';
+    g.lineCap = 'round';
+    drawSatSilhouette(g, type);
+
+    satSpriteCache[type] = c;
+  }
+}
+
+function drawSatSilhouette(g, type) {
+  // All drawn as outlines centered at (0,0), scaled to ~18-20px
+  const s = g.strokeStyle;
+  switch (type) {
+    case 'iss': {
+      // Truss
+      g.beginPath();
+      g.moveTo(-16, 0); g.lineTo(16, 0);
+      g.stroke();
+      // Pressurised module
+      g.strokeRect(-1.5, -2.5, 3, 5);
+      // 4 pairs of solar panels
+      for (const xOff of [-12, -6, 6, 12]) {
+        g.strokeRect(xOff - 2.5, -8, 5, 5.5);
+        g.strokeRect(xOff - 2.5, 2.5, 5, 5.5);
+      }
+      break;
+    }
+    case 'station': {
+      // Core cylinder
+      g.strokeRect(-4, -2.5, 8, 5);
+      // 2 large solar arrays
+      g.strokeRect(-15, -7, 9, 14);
+      g.strokeRect(6, -7, 9, 14);
+      // Panel grid lines
+      g.strokeStyle = 'rgba(255, 220, 140, 0.3)';
+      g.beginPath();
+      g.moveTo(-10.5, -7); g.lineTo(-10.5, 7);
+      g.moveTo(10.5, -7); g.lineTo(10.5, 7);
+      g.moveTo(-15, 0); g.lineTo(-6, 0);
+      g.moveTo(6, 0); g.lineTo(15, 0);
+      g.stroke();
+      g.strokeStyle = s;
+      break;
+    }
+    case 'starlink': {
+      // Flat body
+      g.strokeRect(-3, -2, 6, 4);
+      // Single solar panel
+      g.strokeRect(4, -7, 12, 14);
+      // Panel grid
+      g.strokeStyle = 'rgba(255, 220, 140, 0.25)';
+      g.beginPath();
+      for (let y = -7; y <= 7; y += 3.5) { g.moveTo(4, y); g.lineTo(16, y); }
+      for (let x = 4; x <= 16; x += 4) { g.moveTo(x, -7); g.lineTo(x, 7); }
+      g.stroke();
+      g.strokeStyle = s;
+      break;
+    }
+    case 'oneweb': {
+      // Disc body
+      g.beginPath();
+      g.arc(0, 0, 3, 0, Math.PI * 2);
+      g.stroke();
+      // 2 solar wings
+      g.strokeRect(-14, -4, 9, 8);
+      g.strokeRect(5, -4, 9, 8);
+      // Panel lines
+      g.strokeStyle = 'rgba(255, 220, 140, 0.25)';
+      g.beginPath();
+      g.moveTo(-9.5, -4); g.lineTo(-9.5, 4);
+      g.moveTo(9.5, -4); g.lineTo(9.5, 4);
+      g.stroke();
+      g.strokeStyle = s;
+      break;
+    }
+    case 'hubble': {
+      // Tube body
+      g.strokeRect(-2.5, -8, 5, 16);
+      // Aperture dome
+      g.beginPath();
+      g.arc(0, -8, 2.5, Math.PI, 0);
+      g.stroke();
+      // Solar panels
+      g.strokeRect(-14, -3, 10, 6);
+      g.strokeRect(4, -3, 10, 6);
+      // Panel lines
+      g.strokeStyle = 'rgba(255, 220, 140, 0.25)';
+      g.beginPath();
+      g.moveTo(-9, -3); g.lineTo(-9, 3);
+      g.moveTo(9, -3); g.lineTo(9, 3);
+      g.stroke();
+      g.strokeStyle = s;
+      break;
+    }
+    case 'iridium': {
+      // Prism body
+      g.strokeRect(-2, -6, 4, 12);
+      // 3 antenna panels at 120°
+      for (let a = 0; a < 3; a++) {
+        g.save();
+        g.rotate(a * Math.PI * 2 / 3 - Math.PI / 2);
+        g.strokeRect(2, -1.5, 9, 3);
+        g.restore();
+      }
+      break;
+    }
+    case 'debris': {
+      // Tumbling cylinder
+      g.strokeRect(-3, -6, 6, 12);
+      // Cross-hatching for tumble
+      g.strokeStyle = 'rgba(255, 220, 140, 0.3)';
+      g.setLineDash([2, 2]);
+      g.beginPath();
+      g.moveTo(-3, -2); g.lineTo(3, -2);
+      g.moveTo(-3, 2); g.lineTo(3, 2);
+      g.moveTo(0, -6); g.lineTo(0, 6);
+      g.stroke();
+      g.setLineDash([]);
+      g.strokeStyle = s;
+      break;
+    }
+    default: { // generic
+      // Box body
+      g.strokeRect(-3, -3, 6, 6);
+      // 2 solar panel wings
+      g.strokeRect(-14, -4.5, 9, 9);
+      g.strokeRect(5, -4.5, 9, 9);
+      // Panel lines
+      g.strokeStyle = 'rgba(255, 220, 140, 0.25)';
+      g.beginPath();
+      g.moveTo(-9.5, -4.5); g.lineTo(-9.5, 4.5);
+      g.moveTo(9.5, -4.5); g.lineTo(9.5, 4.5);
+      g.stroke();
+      g.strokeStyle = s;
+      break;
+    }
+  }
+}
+
+function fetchSatelliteTLEs() {
+  if (satFetchDone) return;
+  satFetchDone = true;
+  fetch('https://celestrak.org/NORAD/elements/gp.php?GROUP=visual&FORMAT=tle')
+    .then(r => r.text())
+    .then(text => {
+      const lines = text.trim().split('\n');
+      satData = [];
+      for (let i = 0; i + 2 < lines.length; i += 3) {
+        const name = lines[i].trim();
+        const tleLine1 = lines[i + 1].trim();
+        const tleLine2 = lines[i + 2].trim();
+        try {
+          const satrec = satellite.twoline2satrec(tleLine1, tleLine2);
+          satData.push({ name, satrec });
+        } catch (_) { /* skip bad TLEs */ }
+      }
+      if (locationSet) render();
+    })
+    .catch(() => { /* silently fail — satellites just won't show */ });
+}
+
+function getSatelliteRaDec(satrec, date) {
+  const posVel = satellite.propagate(satrec, date);
+  if (!posVel.position) return null;
+  const gmst_val = satellite.gstime(date);
+  const eci = posVel.position;
+
+  // ECI to geodetic for orbital altitude
+  const geo = satellite.eciToGeodetic(eci, gmst_val);
+  const satAltKm = geo.height;
+
+  // Observer geodetic position (radians, km)
+  const obsGeo = {
+    longitude: lon * DEG,
+    latitude: lat * DEG,
+    height: 0.2
+  };
+
+  // Look angles from observer to satellite
+  const satEcf = satellite.eciToEcf(eci, gmst_val);
+  const lookAngles = satellite.ecfToLookAngles(obsGeo, satEcf);
+
+  const azDeg = lookAngles.azimuth * 180 / Math.PI;
+  const elDeg = lookAngles.elevation * 180 / Math.PI;
+  const rangeSat = lookAngles.rangeSat; // km
+
+  return { alt: elDeg, az: (azDeg + 360) % 360, rangeSat, satAltKm, name: null };
+}
+
+function isSatelliteSunlit(satAltKm, date) {
+  // Rough check: satellite is in Earth's shadow if it's below ~Earth's shadow cone.
+  // Shadow height at satellite distance ≈ Earth radius for low orbits.
+  // More precisely: at terminator, shadow height ~ 0, grows with distance from subsolar point.
+  // Simple model: satellite is sunlit if its altitude puts it above Earth's shadow.
+  // Earth radius ~6371 km. Shadow cone half-angle from Sun is negligible.
+  // Check if satellite is above the geometric shadow:
+  const earthR = 6371;
+  // Sun direction (very rough): compute solar RA to get terminator
+  const jd = dateToJD(date);
+  const D = jd - 2451545.0;
+  const sunMeanLon = (280.46 + 0.9856474 * D) % 360;
+  const sunMeanAnom = (357.528 + 0.9856003 * D) % 360 * Math.PI / 180;
+  const sunEclLon = (sunMeanLon + 1.915 * Math.sin(sunMeanAnom) + 0.020 * Math.sin(2 * sunMeanAnom)) * Math.PI / 180;
+
+  // Sun unit vector in ECI (ignoring obliquity for shadow check — good enough)
+  const sunX = Math.cos(sunEclLon);
+  const sunZ = Math.sin(sunEclLon) * 0.3978;  // sin(23.44°)
+  const sunY = Math.sin(sunEclLon) * 0.9175;  // cos(23.44°)
+
+  // For a rough sunlit test: if the satellite orbital height is high enough, it's more
+  // likely illuminated. Below ~200 km shadow boundary check matters more.
+  // Simple: assume sunlit if altitude > earthR * (1/cos(sun_zenith) - 1) ... but
+  // just use a generous heuristic: above 200 km is usually visible near twilight.
+  return satAltKm > 100;
+}
+
+function drawSatellites(now, lst, cx, cy, radius) {
+  const zoomScale = 120 / fov;
+
+  for (const sat of satData) {
+    const result = getSatelliteRaDec(sat.satrec, now);
+    if (!result) continue;
+    if (result.alt < 0) continue;  // below horizon
+
+    const sp = project(result.alt, result.az, centerAz, centerAlt, fov, cx, cy, radius);
+    if (!sp || sp.x < -50 || sp.x > W + 50 || sp.y < -50 || sp.y > H + 50) continue;
+
+    const satType = classifySatellite(sat.name);
+    satScreenPos.push({ ...sp, name: sat.name, alt: result.alt, az: result.az, rangeSat: result.rangeSat, satAltKm: result.satAltKm, satType });
+
+    const sprite = satSpriteCache[satType];
+    const spriteScale = (satType === 'iss' ? 0.55 : 0.42) * zoomScale;
+    const drawW = sprite.width * spriteScale;
+    const drawH = sprite.height * spriteScale;
+
+    ctx.globalAlpha = 0.85;
+    ctx.drawImage(sprite, sp.x - drawW / 2, sp.y - drawH / 2, drawW, drawH);
+    ctx.globalAlpha = 1;
+
+    // Label
+    if (showLabels && (fov < 50 || sat.name === 'ISS (ZARYA)')) {
+      ctx.fillStyle = 'rgba(160, 200, 240, 0.6)';
+      ctx.font = "300 9px 'JetBrains Mono', monospace";
+      ctx.textAlign = 'left';
+      const label = sat.name === 'ISS (ZARYA)' ? 'ISS' : sat.name;
+      ctx.fillText(label, sp.x + drawW / 2 + 3, sp.y + 3);
+    }
+  }
 }
 
 window.addEventListener('DOMContentLoaded', init);
