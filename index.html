@@ -68,6 +68,32 @@
     color: #8a9bae;
   }
 
+  .hud-editable {
+    cursor: pointer;
+    border-bottom: 1px dashed rgba(138, 155, 174, 0.45);
+    padding-bottom: 1px;
+  }
+
+  .hud-editable:hover {
+    color: #b7c7d8;
+    border-bottom-color: rgba(183, 199, 216, 0.7);
+  }
+
+  .hud-inline-input {
+    background: rgba(20, 28, 40, 0.9);
+    border: 1px solid rgba(100, 140, 200, 0.4);
+    color: #c8d0d8;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    outline: none;
+  }
+
+  .hud-inline-input:focus {
+    border-color: rgba(100, 160, 220, 0.7);
+  }
+
   #tooltip {
     position: absolute;
     display: none;
@@ -676,6 +702,10 @@ let magLimit = 5.0;
 let isDragging = false, lastMX = 0, lastMY = 0;
 let mouseX = 0, mouseY = 0;
 let locationSet = false;
+let skyTimeAnchorMs = null;
+let skyTimeAnchorRealMs = 0;
+let hudDateEditing = false;
+let hudTimeEditing = false;
 let animFrame;
 let milkyWayCanvas = null;
 let milkyWayCtx = null;
@@ -691,10 +721,10 @@ const planetSpriteCache = Object.create(null);
 const planetTextureState = Object.create(null);
 
 const MILKYWAY_TUNING = {
-  baseArcWidth: 90,
-  baseBlur: 100,
+  baseArcWidth: 80,
+  baseBlur: 80,
   baseOpacity: 0.20,
-  cloudStrength: 10.0,
+  cloudStrength: 5.0,
   dustStrength: 10.0,
   microStarDensity: 3.0
 };
@@ -717,9 +747,135 @@ function getMilkyWayRenderTuning() {
 let starScreenPos = [];
 let planetScreenPos = [];
 
+function getSkyNow() {
+  if (skyTimeAnchorMs === null) return new Date();
+  return new Date(skyTimeAnchorMs + (Date.now() - skyTimeAnchorRealMs));
+}
+
+function setSkyNow(date) {
+  skyTimeAnchorMs = date.getTime();
+  skyTimeAnchorRealMs = Date.now();
+}
+
+function formatDateInputValue(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function formatTimeInputValue(date) {
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+function initHudDateTimeEditor() {
+  const hudTime = document.getElementById('hud-time');
+  hudTime.innerHTML =
+    `Date <span class="hud-value hud-editable" id="hud-date-display" title="Click to edit date"></span>` +
+    `<input id="hud-date-input" class="hud-inline-input" type="date" style="display:none;">` +
+    ` · Time <span class="hud-value hud-editable" id="hud-time-display" title="Click to edit time"></span>` +
+    `<input id="hud-time-input" class="hud-inline-input" type="time" step="1" style="display:none;">`;
+
+  document.getElementById('hud-date-display').addEventListener('click', beginDateEdit);
+  document.getElementById('hud-time-display').addEventListener('click', beginTimeEdit);
+
+  const dateInput = document.getElementById('hud-date-input');
+  dateInput.addEventListener('blur', () => {
+    if (hudDateEditing) endDateEdit(true);
+  });
+  dateInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      endDateEdit(true);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      endDateEdit(false);
+    }
+  });
+
+  const timeInput = document.getElementById('hud-time-input');
+  timeInput.addEventListener('blur', () => {
+    if (hudTimeEditing) endTimeEdit(true);
+  });
+  timeInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      endTimeEdit(true);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      endTimeEdit(false);
+    }
+  });
+}
+
+function beginDateEdit() {
+  if (hudDateEditing || hudTimeEditing) return;
+  hudDateEditing = true;
+  const now = getSkyNow();
+  const display = document.getElementById('hud-date-display');
+  const input = document.getElementById('hud-date-input');
+  input.value = formatDateInputValue(now);
+  display.style.display = 'none';
+  input.style.display = 'inline-block';
+  input.focus();
+}
+
+function endDateEdit(commit) {
+  if (!hudDateEditing) return;
+  const input = document.getElementById('hud-date-input');
+  if (commit && input.value) {
+    const [y, m, d] = input.value.split('-').map(Number);
+    if (Number.isFinite(y) && Number.isFinite(m) && Number.isFinite(d)) {
+      const updated = getSkyNow();
+      updated.setFullYear(y, m - 1, d);
+      setSkyNow(updated);
+    }
+  }
+
+  hudDateEditing = false;
+  input.style.display = 'none';
+  document.getElementById('hud-date-display').style.display = 'inline';
+  render();
+}
+
+function beginTimeEdit() {
+  if (hudTimeEditing || hudDateEditing) return;
+  hudTimeEditing = true;
+  const now = getSkyNow();
+  const display = document.getElementById('hud-time-display');
+  const input = document.getElementById('hud-time-input');
+  input.value = formatTimeInputValue(now);
+  display.style.display = 'none';
+  input.style.display = 'inline-block';
+  input.focus();
+}
+
+function endTimeEdit(commit) {
+  if (!hudTimeEditing) return;
+  const input = document.getElementById('hud-time-input');
+  if (commit && input.value) {
+    const parts = input.value.split(':').map(Number);
+    const hh = parts[0] || 0;
+    const mm = parts[1] || 0;
+    const ss = parts[2] || 0;
+    const updated = getSkyNow();
+    updated.setHours(hh, mm, ss, 0);
+    setSkyNow(updated);
+  }
+
+  hudTimeEditing = false;
+  input.style.display = 'none';
+  document.getElementById('hud-time-display').style.display = 'inline';
+  render();
+}
+
 function init() {
   canvas = document.getElementById('sky');
   ctx = canvas.getContext('2d');
+  initHudDateTimeEditor();
   loadMoonTexture();
   buildPlanetSprites();
   loadPlanetTextures();
@@ -945,7 +1101,7 @@ function render() {
 }
 
 function doRender() {
-  const now = new Date();
+  const now = getSkyNow();
   const jd = dateToJD(now);
   const lst = (gmst(jd) + lon) % 360;
 
@@ -1435,7 +1591,10 @@ function updateHUD(now, lst) {
 
   const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const dateStr = now.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
-  document.getElementById('hud-time').innerHTML = `<span class="hud-value">${dateStr} ${timeStr}</span>`;
+  const dateDisplay = document.getElementById('hud-date-display');
+  const timeDisplay = document.getElementById('hud-time-display');
+  if (dateDisplay && !hudDateEditing) dateDisplay.textContent = dateStr;
+  if (timeDisplay && !hudTimeEditing) timeDisplay.textContent = timeStr;
 
   const azStr = centerAz.toFixed(1) + '°';
   const altStr = centerAlt.toFixed(1) + '°';
