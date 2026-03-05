@@ -1,13 +1,21 @@
 {
-  "rewrites": [
-    {
-      "source": "/api/opensky/states",
-      "destination": "/api/opensky/states.js"
-    }
-  ],
   "functions": {
     "api/opensky/states.js": {
       "maxDuration": 10
     }
-  }
+  },
+  "routes": [
+    {
+      "src": "/api/opensky/states",
+      "dest": "/api/opensky/states.js"
+    },
+    {
+      "src": "/api/(.*)",
+      "status": 404
+    },
+    {
+      "src": "/(.*)",
+      "status": 404
+    }
+  ]
 }
