@@ -382,6 +382,21 @@ const PLANETS = [
     da:0, de:-0.00050991, dI:0.00193, dL:1222.1138, dwbar:-0.41897, dOm:-0.28867 }
 ];
 
+// Openly licensed PNG assets from Wikimedia Commons.
+const PLANET_TEXTURE_URLS = {
+  Mercury: 'https://upload.wikimedia.org/wikipedia/commons/2/24/Transparent_Mercury.png',
+  Venus: 'https://upload.wikimedia.org/wikipedia/commons/9/93/Venus_globe_-_transparent_background.png',
+  Mars: 'https://upload.wikimedia.org/wikipedia/commons/2/24/Transparent_Mercury.png',
+  Jupiter: 'https://upload.wikimedia.org/wikipedia/commons/e/e1/Jupiter_%28transparent%29.png',
+  Saturn: 'https://upload.wikimedia.org/wikipedia/commons/0/0a/Transparent_Saturn.png'
+};
+
+const MOON_TEST_OVERRIDE = {
+  enabled: false,
+  ra: 18,   // hours
+  dec: 71   // degrees
+};
+
 function computePlanetRA_Dec(planet, jd) {
   const T = (jd - 2451545.0) / 36525.0;
   const a = planet.a + planet.da * T;
@@ -461,12 +476,53 @@ function getPlanetPositions(date) {
   const moonY = Math.cos(eps2) * Math.cos(moonLat) * Math.sin(moonLon) - Math.sin(eps2) * Math.sin(moonLat);
   const moonZ = Math.sin(eps2) * Math.cos(moonLat) * Math.sin(moonLon) + Math.cos(eps2) * Math.sin(moonLat);
 
-  const moonRa = ((Math.atan2(moonY, moonX) * 180 / Math.PI) + 360) % 360 / 15;
-  const moonDec = Math.atan2(moonZ, Math.sqrt(moonX * moonX + moonY * moonY)) * 180 / Math.PI;
+  const computedMoonRa = ((Math.atan2(moonY, moonX) * 180 / Math.PI) + 360) % 360 / 15;
+  const computedMoonDec = Math.atan2(moonZ, Math.sqrt(moonX * moonX + moonY * moonY)) * 180 / Math.PI;
+  const moonRa = MOON_TEST_OVERRIDE.enabled ? MOON_TEST_OVERRIDE.ra : computedMoonRa;
+  const moonDec = MOON_TEST_OVERRIDE.enabled ? MOON_TEST_OVERRIDE.dec : computedMoonDec;
+  const moonPhase = getMoonPhaseInfo(jd);
 
-  results.push({ name: "Moon", symbol: "☽", color: "#e8e4d8", ra: moonRa, dec: moonDec, dist: 0.00257 });
+  results.push({
+    name: "Moon",
+    symbol: "☽",
+    color: "#e8e4d8",
+    ra: moonRa,
+    dec: moonDec,
+    dist: 0.00257,
+    phaseName: moonPhase.phaseName,
+    phase: moonPhase.phase,
+    age: moonPhase.age,
+    illuminated: moonPhase.illuminated,
+    waxing: moonPhase.waxing
+  });
 
   return results;
+}
+
+function getMoonPhaseInfo(jd) {
+  const synodicMonth = 29.530588853;
+  const referenceNewMoon = 2451550.1;
+  const age = ((jd - referenceNewMoon) % synodicMonth + synodicMonth) % synodicMonth;
+  const phase = age / synodicMonth;
+  const illuminated = 0.5 * (1 - Math.cos(phase * Math.PI * 2));
+  return {
+    phase,
+    age,
+    illuminated,
+    waxing: phase < 0.5,
+    phaseName: getMoonPhaseName(phase)
+  };
+}
+
+function getMoonPhaseName(phase) {
+  if (phase < 0.03 || phase >= 0.97) return 'New Moon';
+  if (phase < 0.22) return 'Waxing Crescent';
+  if (phase < 0.28) return 'First Quarter';
+  if (phase < 0.47) return 'Waxing Gibbous';
+  if (phase < 0.53) return 'Full Moon';
+  if (phase < 0.72) return 'Waning Gibbous';
+  if (phase < 0.78) return 'Last Quarter';
+  return 'Waning Crescent';
 }
 
 // ═══════════════════════════════════════════
@@ -624,6 +680,12 @@ let milkyStarsCanvas = null;
 let milkyStarsCtx = null;
 let milkyWayCacheKey = '';
 let milkyMicroStars = null;
+const MOON_TEXTURE_URL = 'https://upload.wikimedia.org/wikipedia/commons/e/e1/FullMoon2010.jpg';
+const moonTexture = new Image();
+let moonTextureReady = false;
+let moonTextureFailed = false;
+const planetSpriteCache = Object.create(null);
+const planetTextureState = Object.create(null);
 
 const MILKYWAY_TUNING = {
   baseArcWidth: 90,
@@ -641,7 +703,8 @@ function getMilkyWayRenderTuning() {
   return {
     ...MILKYWAY_TUNING,
     baseArcWidth: MILKYWAY_TUNING.baseArcWidth * 0.55,
-    baseBlur: MILKYWAY_TUNING.baseBlur * 0.25
+    baseBlur: MILKYWAY_TUNING.baseBlur * 0.25,
+    cloudStrength: 2
   };
 }
 
@@ -652,6 +715,9 @@ let planetScreenPos = [];
 function init() {
   canvas = document.getElementById('sky');
   ctx = canvas.getContext('2d');
+  loadMoonTexture();
+  buildPlanetSprites();
+  loadPlanetTextures();
   resize();
   window.addEventListener('resize', resize);
 
@@ -707,6 +773,150 @@ function applyManualLocation() {
 
 function startRendering() {
   render();
+}
+
+function loadMoonTexture() {
+  if (moonTextureReady || moonTextureFailed || moonTexture.src) return;
+  moonTexture.crossOrigin = 'anonymous';
+  moonTexture.decoding = 'async';
+  moonTexture.onload = () => {
+    moonTextureReady = true;
+    if (locationSet) render();
+  };
+  moonTexture.onerror = () => {
+    moonTextureFailed = true;
+  };
+  moonTexture.src = MOON_TEXTURE_URL;
+}
+
+function buildPlanetSprites() {
+  for (const planet of PLANETS) {
+    planetSpriteCache[planet.name] = createPlanetSprite(planet);
+  }
+}
+
+function loadPlanetTextures() {
+  for (const planet of PLANETS) {
+    const url = PLANET_TEXTURE_URLS[planet.name];
+    if (!url) continue;
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.decoding = 'async';
+    planetTextureState[planet.name] = { loaded: false, failed: false, img };
+
+    img.onload = () => {
+      planetTextureState[planet.name].loaded = true;
+      planetSpriteCache[planet.name] = img;
+      if (locationSet) render();
+    };
+
+    img.onerror = () => {
+      planetTextureState[planet.name].failed = true;
+    };
+
+    img.src = url;
+  }
+}
+
+function createPlanetSprite(planet) {
+  const isSaturn = planet.name === 'Saturn';
+  const size = isSaturn ? 48 : 32;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const c = canvas.getContext('2d');
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = isSaturn ? 18 : 24;
+
+  if (isSaturn) {
+    c.save();
+    c.translate(cx, cy);
+    c.rotate(-0.35);
+    const ring = c.createLinearGradient(-r * 2.4, 0, r * 2.4, 0);
+    ring.addColorStop(0, 'rgba(210, 195, 145, 0.0)');
+    ring.addColorStop(0.25, 'rgba(210, 195, 145, 0.45)');
+    ring.addColorStop(0.5, 'rgba(255, 240, 190, 0.75)');
+    ring.addColorStop(0.75, 'rgba(210, 195, 145, 0.45)');
+    ring.addColorStop(1, 'rgba(210, 195, 145, 0.0)');
+    c.fillStyle = ring;
+    c.beginPath();
+    c.ellipse(0, 0, r * 2.3, r * 0.8, 0, 0, Math.PI * 2);
+    c.fill();
+    c.clearRect(-r * 1.2, -r * 0.48, r * 2.4, r * 0.96);
+    c.restore();
+  }
+
+  c.save();
+  c.beginPath();
+  c.arc(cx, cy, r, 0, Math.PI * 2);
+  c.clip();
+
+  const base = c.createRadialGradient(cx - r * 0.38, cy - r * 0.38, r * 0.18, cx, cy, r * 1.05);
+  base.addColorStop(0, '#ffffff');
+  base.addColorStop(0.3, planet.color);
+  base.addColorStop(1, 'rgba(35, 35, 35, 1)');
+  c.fillStyle = base;
+  c.fillRect(cx - r, cy - r, r * 2, r * 2);
+
+  if (planet.name === 'Mercury') {
+    c.fillStyle = 'rgba(70, 70, 70, 0.25)';
+    for (let i = 0; i < 10; i++) {
+      const px = cx - r * 0.65 + i * (r * 0.15);
+      const py = cy + Math.sin(i * 1.7) * r * 0.45;
+      c.beginPath();
+      c.arc(px, py, 1.5 + (i % 3), 0, Math.PI * 2);
+      c.fill();
+    }
+  } else if (planet.name === 'Venus') {
+    c.strokeStyle = 'rgba(255, 245, 210, 0.22)';
+    c.lineWidth = 2;
+    for (let i = -2; i <= 2; i++) {
+      c.beginPath();
+      c.moveTo(cx - r, cy + i * 6);
+      c.bezierCurveTo(cx - r * 0.25, cy + i * 5, cx + r * 0.2, cy + i * 7, cx + r, cy + i * 4);
+      c.stroke();
+    }
+  } else if (planet.name === 'Mars') {
+    c.fillStyle = 'rgba(80, 30, 20, 0.35)';
+    c.beginPath();
+    c.ellipse(cx - r * 0.2, cy + r * 0.1, r * 0.35, r * 0.2, -0.4, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = 'rgba(245, 245, 245, 0.5)';
+    c.beginPath();
+    c.arc(cx + r * 0.15, cy - r * 0.72, r * 0.2, 0, Math.PI * 2);
+    c.fill();
+  } else if (planet.name === 'Jupiter') {
+    c.fillStyle = 'rgba(120, 85, 45, 0.28)';
+    for (let i = -3; i <= 3; i++) {
+      c.fillRect(cx - r, cy + i * 6 - 1, r * 2, 3);
+    }
+    c.fillStyle = 'rgba(210, 120, 90, 0.45)';
+    c.beginPath();
+    c.ellipse(cx + r * 0.35, cy + r * 0.15, r * 0.2, r * 0.12, 0.15, 0, Math.PI * 2);
+    c.fill();
+  } else if (planet.name === 'Saturn') {
+    c.fillStyle = 'rgba(145, 120, 75, 0.22)';
+    for (let i = -2; i <= 2; i++) {
+      c.fillRect(cx - r, cy + i * 4 - 1, r * 2, 2);
+    }
+  }
+
+  const shade = c.createLinearGradient(cx - r, cy, cx + r, cy);
+  shade.addColorStop(0, 'rgba(0, 0, 0, 0.0)');
+  shade.addColorStop(1, 'rgba(0, 0, 0, 0.3)');
+  c.fillStyle = shade;
+  c.fillRect(cx - r, cy - r, r * 2, r * 2);
+  c.restore();
+
+  c.strokeStyle = 'rgba(255, 255, 255, 0.22)';
+  c.lineWidth = 1.2;
+  c.beginPath();
+  c.arc(cx, cy, r, 0, Math.PI * 2);
+  c.stroke();
+
+  return canvas;
 }
 
 function resize() {
@@ -868,25 +1078,38 @@ function doRender() {
 
       planetScreenPos.push({ ...sp, ...p, alt: aa.alt, az: aa.az });
 
-      const sz = 3 * (120 / fov);
+      const isMoon = p.name === 'Moon';
+      const sz = (isMoon ? 8.5 : 2) * (120 / fov);
+      const planetImageRadius = isMoon ? sz : sz * 1.45;
 
       // Planet glow
-      const glow = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, sz * 5);
-      glow.addColorStop(0, p.color + '40');
+      const glowRadius = isMoon ? planetImageRadius * 3.5 : planetImageRadius * 3.8;
+      const glow = ctx.createRadialGradient(sp.x, sp.y, 0, sp.x, sp.y, glowRadius);
+      glow.addColorStop(0, p.color + (isMoon ? '55' : '40'));
       glow.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = glow;
-      ctx.fillRect(sp.x - sz * 5, sp.y - sz * 5, sz * 10, sz * 10);
+      ctx.fillRect(sp.x - glowRadius, sp.y - glowRadius, glowRadius * 2, glowRadius * 2);
 
-      ctx.fillStyle = p.color;
-      ctx.beginPath();
-      ctx.arc(sp.x, sp.y, sz, 0, Math.PI * 2);
-      ctx.fill();
+      if (isMoon) {
+        drawMoonDisc(sp.x, sp.y, planetImageRadius, p);
+      } else {
+        const sprite = planetSpriteCache[p.name];
+        if (sprite) {
+          const d = planetImageRadius * 2;
+          ctx.drawImage(sprite, sp.x - d / 2, sp.y - d / 2, d, d);
+        } else {
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(sp.x, sp.y, planetImageRadius, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
 
       if (showLabels) {
         ctx.fillStyle = p.color + 'cc';
         ctx.font = "500 11px 'Outfit', sans-serif";
         ctx.textAlign = 'left';
-        ctx.fillText(p.name, sp.x + sz + 5, sp.y + 4);
+        ctx.fillText(p.name, sp.x + planetImageRadius + (isMoon ? 7 : 5), sp.y + 4);
       }
     }
   }
@@ -899,6 +1122,49 @@ function doRender() {
 
   // Schedule next frame
   setTimeout(render, 1000);
+}
+
+function drawMoonDisc(x, y, radius, moon) {
+  const moonRadius = radius * 0.86;
+  const textureZoom = 1.28;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, moonRadius, 0, Math.PI * 2);
+  ctx.clip();
+
+  if (moonTextureReady) {
+    const texHalf = moonRadius * textureZoom;
+    ctx.drawImage(moonTexture, x - texHalf, y - texHalf, texHalf * 2, texHalf * 2);
+  } else {
+    const fallback = ctx.createRadialGradient(
+      x - moonRadius * 0.35,
+      y - moonRadius * 0.35,
+      moonRadius * 0.15,
+      x,
+      y,
+      moonRadius
+    );
+    fallback.addColorStop(0, '#f1efe6');
+    fallback.addColorStop(1, '#bcb7aa');
+    ctx.fillStyle = fallback;
+    ctx.fillRect(x - moonRadius, y - moonRadius, moonRadius * 2, moonRadius * 2);
+  }
+
+  // Slight visual contrast boost so near-full/near-new phases read better on screen.
+  const displayIlluminated = Math.max(0, Math.min(1, 0.5 + (moon.illuminated - 0.5) * 0.78));
+  const litRadiusX = moonRadius * displayIlluminated;
+  const hemisphereFlip = lat < 0 ? -1 : 1;
+  const litOnRight = moon.waxing ? hemisphereFlip > 0 : hemisphereFlip < 0;
+  const offset = moonRadius - litRadiusX;
+  const litCenterX = x + (litOnRight ? offset : -offset);
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+  ctx.beginPath();
+  ctx.arc(x, y, moonRadius, 0, Math.PI * 2);
+  ctx.ellipse(litCenterX, y, litRadiusX, moonRadius, 0, 0, Math.PI * 2);
+  ctx.fill('evenodd');
+  ctx.restore();
 }
 
 function drawMilkyWayLayer(lst, cx, cy, radius) {
@@ -1280,10 +1546,19 @@ function updateTooltip(mx, my) {
     if (closest.type === 'planet') {
       const p = closest.data;
       document.getElementById('tip-name').textContent = `${p.symbol} ${p.name}`;
-      document.getElementById('tip-detail').innerHTML =
-        `Alt ${p.alt.toFixed(1)}° Az ${p.az.toFixed(1)}°<br>` +
-        `RA ${(p.ra).toFixed(2)}h Dec ${(p.dec).toFixed(1)}°<br>` +
-        `Dist ${p.dist.toFixed(2)} AU`;
+      if (p.name === 'Moon') {
+        const distKm = Math.round(p.dist * 149597870.7);
+        document.getElementById('tip-detail').innerHTML =
+          `Alt ${p.alt.toFixed(1)}° Az ${p.az.toFixed(1)}°<br>` +
+          `${p.phaseName} · ${(p.illuminated * 100).toFixed(0)}% lit<br>` +
+          `RA ${(p.ra).toFixed(2)}h Dec ${(p.dec).toFixed(1)}°<br>` +
+          `Dist ${distKm.toLocaleString()} km`;
+      } else {
+        document.getElementById('tip-detail').innerHTML =
+          `Alt ${p.alt.toFixed(1)}° Az ${p.az.toFixed(1)}°<br>` +
+          `RA ${(p.ra).toFixed(2)}h Dec ${(p.dec).toFixed(1)}°<br>` +
+          `Dist ${p.dist.toFixed(2)} AU`;
+      }
     } else {
       const s = closest.data;
       const name = s.n || s.bf || `HIP ${s.hip}`;
