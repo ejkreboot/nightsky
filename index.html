@@ -627,12 +627,23 @@ let milkyMicroStars = null;
 
 const MILKYWAY_TUNING = {
   baseArcWidth: 90,
-  baseBlur: 200,
-  baseOpacity: 0.17,
-  cloudStrength: 20.0,
+  baseBlur: 100,
+  baseOpacity: 0.20,
+  cloudStrength: 10.0,
   dustStrength: 10.0,
   microStarDensity: 3.0
 };
+
+function getMilkyWayRenderTuning() {
+  const isSmallDisplay = window.innerWidth <= 540;
+  if (!isSmallDisplay) return MILKYWAY_TUNING;
+
+  return {
+    ...MILKYWAY_TUNING,
+    baseArcWidth: MILKYWAY_TUNING.baseArcWidth * 0.55,
+    baseBlur: MILKYWAY_TUNING.baseBlur * 0.25
+  };
+}
 
 // Precomputed star screen positions for hit testing
 let starScreenPos = [];
@@ -891,6 +902,8 @@ function doRender() {
 }
 
 function drawMilkyWayLayer(lst, cx, cy, radius) {
+  const milkyWayTuning = getMilkyWayRenderTuning();
+
   if (!milkyWayCanvas) {
     milkyWayCanvas = document.createElement('canvas');
     milkyWayCtx = milkyWayCanvas.getContext('2d');
@@ -925,7 +938,7 @@ function drawMilkyWayLayer(lst, cx, cy, radius) {
     if (!milkyMicroStars) {
       const seed = { v: 123456789 };
       milkyMicroStars = [];
-      const microStarCount = Math.max(120, Math.round(720 * MILKYWAY_TUNING.microStarDensity));
+      const microStarCount = Math.max(120, Math.round(720 * milkyWayTuning.microStarDensity));
       for (let i = 0; i < microStarCount; i++) {
         const l = seededRand(seed) * 360;
         const b = (seededRand(seed) + seededRand(seed) + seededRand(seed) - 1.5) * 7.5;
@@ -947,7 +960,7 @@ function drawMilkyWayLayer(lst, cx, cy, radius) {
     if (samples.length > 1) {
       milkyWayCtx.save();
       milkyWayCtx.strokeStyle = 'rgba(155,190,225,0.26)';
-      milkyWayCtx.lineWidth = MILKYWAY_TUNING.baseArcWidth * (120 / fov);
+      milkyWayCtx.lineWidth = milkyWayTuning.baseArcWidth * (120 / fov);
       milkyWayCtx.lineCap = 'round';
       milkyWayCtx.lineJoin = 'round';
       milkyWayCtx.beginPath();
@@ -981,7 +994,7 @@ function drawMilkyWayLayer(lst, cx, cy, radius) {
 
         const blobR = (14 + 34 * hash01(s.l * 0.57 + 3.1) + 26 * coreBoost) * sizeScale;
         const alphaBase = 0.016 + 0.026 * hash01(s.l * 0.83 + 5.4) + 0.055 * coreBoost;
-        const alpha = alphaBase * MILKYWAY_TUNING.cloudStrength;
+        const alpha = alphaBase * milkyWayTuning.cloudStrength;
 
         const rg = 145 + Math.round(30 * hash01(s.l * 0.23 + 2.2));
         const gg = 170 + Math.round(30 * hash01(s.l * 0.27 + 4.1));
@@ -996,7 +1009,7 @@ function drawMilkyWayLayer(lst, cx, cy, radius) {
       }
 
       // Subtle dark dust mottling
-      if (MILKYWAY_TUNING.dustStrength > 0.001) {
+      if (milkyWayTuning.dustStrength > 0.001) {
         for (let i = 0; i < samples.length; i += 2) {
           const s = samples[i];
           const n = hash01(s.l * 0.91 + 12.7);
@@ -1004,7 +1017,7 @@ function drawMilkyWayLayer(lst, cx, cy, radius) {
           const coreDist = galacticCoreDistance(s.l);
           const coreBoost = Math.exp(-(coreDist * coreDist) / (2 * 42 * 42));
           const r = (10 + 18 * n + 22 * coreBoost) * (120 / fov);
-          const a = (0.016 + 0.030 * n + 0.045 * coreBoost) * MILKYWAY_TUNING.dustStrength;
+          const a = (0.016 + 0.030 * n + 0.045 * coreBoost) * milkyWayTuning.dustStrength;
           const g = milkyWayCtx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r);
           g.addColorStop(0, `rgba(8,12,18,${a.toFixed(3)})`);
           g.addColorStop(1, 'rgba(0,0,0,0)');
@@ -1024,7 +1037,7 @@ function drawMilkyWayLayer(lst, cx, cy, radius) {
 
       const coreDist = galacticCoreDistance(ms.l);
       const coreBoost = Math.exp(-(coreDist * coreDist) / (2 * 38 * 38));
-      const starStrength = Math.max(0, MILKYWAY_TUNING.microStarDensity);
+      const starStrength = Math.max(0, milkyWayTuning.microStarDensity);
       const alpha = (0.045 + 0.050 * starStrength) * (0.80 + 0.20 * ms.twinkle) * (0.90 + 0.10 * coreBoost);
       milkyStarsCtx.fillStyle = `rgba(200,220,255,${Math.min(0.22, alpha).toFixed(3)})`;
       milkyStarsCtx.fillRect(p.x, p.y, 1, 1);
@@ -1033,13 +1046,13 @@ function drawMilkyWayLayer(lst, cx, cy, radius) {
 
   ctx.save();
   ctx.globalCompositeOperation = 'screen';
-  const blurPx = MILKYWAY_TUNING.baseBlur * (120 / fov);
-  ctx.globalAlpha = MILKYWAY_TUNING.baseOpacity;
+  const blurPx = milkyWayTuning.baseBlur * (120 / fov);
+  ctx.globalAlpha = milkyWayTuning.baseOpacity;
   ctx.filter = `blur(${blurPx.toFixed(1)}px)`;
   ctx.drawImage(milkyWayCanvas, 0, 0, W, H);
   ctx.filter = 'none';
 
-  const starsAlpha = Math.min(0.85, 0.20 + 0.22 * MILKYWAY_TUNING.microStarDensity);
+  const starsAlpha = Math.min(0.85, 0.20 + 0.22 * milkyWayTuning.microStarDensity);
   ctx.globalAlpha = starsAlpha;
   ctx.drawImage(milkyStarsCanvas, 0, 0, W, H);
   ctx.restore();
