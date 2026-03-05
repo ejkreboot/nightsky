@@ -163,6 +163,9 @@
 
 
   @media (max-width: 540px) {
+    #btn-milkyway {
+      display: none;
+    }
     #controls {
       bottom: 10px;
       gap: 6px;
@@ -700,11 +703,13 @@ function getMilkyWayRenderTuning() {
   const isSmallDisplay = window.innerWidth <= 540;
   if (!isSmallDisplay) return MILKYWAY_TUNING;
 
-  return {
-    ...MILKYWAY_TUNING,
-    baseArcWidth: MILKYWAY_TUNING.baseArcWidth * 0.25,
-    baseBlur: MILKYWAY_TUNING.baseBlur * 0.25,
-    cloudStrength: 0
+  return { // disabling Milkyway on mobile for now.
+    baseArcWidth: 0,
+    baseBlur: 0,
+    baseOpacity: 0.0,
+    cloudStrength: 0.0,
+    dustStrength: 0.0,
+    microStarDensity: 0.0
   };
 }
 
