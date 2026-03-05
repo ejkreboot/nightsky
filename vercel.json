@@ -1,4 +1,10 @@
 {
+  "rewrites": [
+    {
+      "source": "/api/opensky/states",
+      "destination": "/api/opensky/states.js"
+    }
+  ],
   "functions": {
     "api/opensky/states.js": {
       "maxDuration": 10
