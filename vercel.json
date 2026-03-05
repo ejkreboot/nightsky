@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/opensky/states.js": {
+      "maxDuration": 10
+    }
+  }
+}
