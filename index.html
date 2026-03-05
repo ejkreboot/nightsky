@@ -102,8 +102,12 @@
     left: 50%;
     transform: translateX(-50%);
     display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
     gap: 8px;
     z-index: 10;
+    width: max-content;
+    max-width: calc(100vw - 24px);
   }
 
   .ctrl-btn {
@@ -119,6 +123,7 @@
     transition: all 0.2s;
     text-transform: uppercase;
     backdrop-filter: blur(8px);
+    white-space: nowrap;
   }
 
   .ctrl-btn:hover { border-color: rgba(100, 160, 220, 0.5); color: #a0b8d0; }
@@ -156,6 +161,29 @@
     outline: none;
   }
 
+
+  @media (max-width: 540px) {
+    #controls {
+      bottom: 10px;
+      gap: 6px;
+    }
+    .ctrl-btn {
+      font-size: 9px;
+      padding: 7px 10px;
+      letter-spacing: 0.5px;
+    }
+    .mag-slider-wrap {
+      padding: 5px 10px;
+    }
+    .mag-label {
+      font-size: 9px;
+      letter-spacing: 0.5px;
+    }
+    #mag-slider {
+      width: 80px;
+    }
+  }
+
   #mag-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
@@ -175,6 +203,7 @@
     cursor: pointer;
     border: 1px solid rgba(100, 160, 220, 0.5);
   }
+
 
   #loading {
     position: absolute;
@@ -281,6 +310,7 @@
   <button class="ctrl-btn active" id="btn-names" onclick="toggleNames()">Names</button>
   <button class="ctrl-btn" id="btn-connames" onclick="toggleConNames()">Constellations</button>
   <button class="ctrl-btn active" id="btn-planets" onclick="togglePlanets()">Planets</button>
+  <button class="ctrl-btn active" id="btn-milkyway" onclick="toggleMilkyWay()">Milky Way</button>
   <button class="ctrl-btn" id="btn-temp" onclick="toggleTemp()">Temp</button>
   <div class="mag-slider-wrap">
     <label class="mag-label" for="mag-slider">Mag ≤ <span id="mag-value">5.0</span></label>
@@ -477,6 +507,38 @@ function raDecToAltAz(ra, dec, lat, lon, lst) {
   return { alt: alt * RAD, az: az * RAD };
 }
 
+function galacticToRaDec(lDeg, bDeg = 0) {
+  const raNGP = 192.85948 * DEG;
+  const decNGP = 27.12825 * DEG;
+  const lOmega = 32.93192 * DEG;
+  const l = lDeg * DEG;
+  const b = bDeg * DEG;
+
+  const sinDec = Math.sin(b) * Math.sin(decNGP) + Math.cos(b) * Math.cos(decNGP) * Math.sin(l - lOmega);
+  const dec = Math.asin(Math.max(-1, Math.min(1, sinDec)));
+
+  const y = Math.cos(b) * Math.cos(l - lOmega);
+  const x = Math.sin(b) * Math.cos(decNGP) - Math.cos(b) * Math.sin(decNGP) * Math.sin(l - lOmega);
+  const ra = (Math.atan2(y, x) + raNGP + Math.PI * 2) % (Math.PI * 2);
+
+  return { ra: ra * RAD / 15, dec: dec * RAD };
+}
+
+function hash01(x) {
+  const s = Math.sin(x * 12.9898 + 78.233) * 43758.5453123;
+  return s - Math.floor(s);
+}
+
+function galacticCoreDistance(lDeg) {
+  const a = ((lDeg % 360) + 360) % 360;
+  return Math.min(a, 360 - a);
+}
+
+function seededRand(seedObj) {
+  seedObj.v = (1664525 * seedObj.v + 1013904223) >>> 0;
+  return seedObj.v / 4294967296;
+}
+
 // Stereographic projection (zenith-centered)
 function project(alt, az, centerAz, centerAlt, fov, cx, cy, radius) {
   // Convert to direction vectors
@@ -548,14 +610,29 @@ function bvToRGB(bv) {
 let canvas, ctx;
 let W, H;
 let lat = 42.96, lon = -85.66; // Grand Rapids default
-let centerAz = 180, centerAlt = 90;
-let fov = 80;
-let showLines = true, showLabels = true, showConNames = false, showPlanets = true, showGrid = true, showTemp = false;
+let centerAz = 0, centerAlt = 45;
+let fov = (window.innerWidth <= 540 && window.innerHeight > window.innerWidth) ? 40 : 60;
+let showLines = true, showLabels = true, showConNames = false, showPlanets = true, showGrid = true, showTemp = false, showMilkyWay = true;
 let magLimit = 5.0;
 let isDragging = false, lastMX = 0, lastMY = 0;
 let mouseX = 0, mouseY = 0;
 let locationSet = false;
 let animFrame;
+let milkyWayCanvas = null;
+let milkyWayCtx = null;
+let milkyStarsCanvas = null;
+let milkyStarsCtx = null;
+let milkyWayCacheKey = '';
+let milkyMicroStars = null;
+
+const MILKYWAY_TUNING = {
+  baseArcWidth: 90,
+  baseBlur: 200,
+  baseOpacity: 0.17,
+  cloudStrength: 20.0,
+  dustStrength: 10.0,
+  microStarDensity: 3.0
+};
 
 // Precomputed star screen positions for hit testing
 let starScreenPos = [];
@@ -629,6 +706,7 @@ function resize() {
   canvas.style.width = W + 'px';
   canvas.style.height = H + 'px';
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  milkyWayCacheKey = '';
   if (locationSet) render();
 }
 
@@ -658,6 +736,8 @@ function doRender() {
   grad.addColorStop(1, 'rgba(15, 25, 40, 0.3)');
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, W, H);
+
+  if (showMilkyWay) drawMilkyWayLayer(lst, cx, cy, radius);
 
   // Horizon circle
   drawHorizon(cx, cy, radius, lst);
@@ -724,14 +804,15 @@ function doRender() {
 
     const col = showTemp ? bvToRGB(s.ci) : 'rgb(210,220,235)';
 
-    // Glow for bright stars
-    if (s.mag < 2.0) {
-      const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, sz * 4);
-      glow.addColorStop(0, col.replace('rgb', 'rgba').replace(')', `,${alpha * 0.3})`));
-      glow.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = glow;
-      ctx.fillRect(p.x - sz * 4, p.y - sz * 4, sz * 8, sz * 8);
-    }
+    // Glow for all stars, radius and intensity scale with brightness
+    const glowRadius = sz * (4.5 + Math.max(0, (3.0 - s.mag) * 1.0)) * (60 / fov);
+    const glowAlpha = alpha * Math.min(0.55, 0.28 + Math.max(0, (3.5 - s.mag)) * 0.05);
+    const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowRadius);
+    glow.addColorStop(0, col.replace('rgb', 'rgba').replace(')', `,${glowAlpha})`));
+    glow.addColorStop(0.4, col.replace('rgb', 'rgba').replace(')', `,${glowAlpha * 0.4})`));
+    glow.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(p.x - glowRadius, p.y - glowRadius, glowRadius * 2, glowRadius * 2);
 
     ctx.globalAlpha = alpha;
     ctx.fillStyle = col;
@@ -804,6 +885,161 @@ function doRender() {
 
   // Schedule next frame
   setTimeout(render, 1000);
+}
+
+function drawMilkyWayLayer(lst, cx, cy, radius) {
+  if (!milkyWayCanvas) {
+    milkyWayCanvas = document.createElement('canvas');
+    milkyWayCtx = milkyWayCanvas.getContext('2d');
+    milkyStarsCanvas = document.createElement('canvas');
+    milkyStarsCtx = milkyStarsCanvas.getContext('2d');
+  }
+
+  if (milkyWayCanvas.width !== canvas.width || milkyWayCanvas.height !== canvas.height) {
+    milkyWayCanvas.width = canvas.width;
+    milkyWayCanvas.height = canvas.height;
+    milkyWayCtx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+
+    milkyStarsCanvas.width = canvas.width;
+    milkyStarsCanvas.height = canvas.height;
+    milkyStarsCtx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+
+    milkyWayCacheKey = '';
+  }
+
+  const key = [
+    W, H,
+    centerAz.toFixed(2), centerAlt.toFixed(2), fov.toFixed(2),
+    lat.toFixed(2), lon.toFixed(2),
+    (Math.round(lst * 4) / 4).toFixed(2)
+  ].join('|');
+
+  if (key !== milkyWayCacheKey) {
+    milkyWayCacheKey = key;
+    milkyWayCtx.clearRect(0, 0, W, H);
+    milkyStarsCtx.clearRect(0, 0, W, H);
+
+    if (!milkyMicroStars) {
+      const seed = { v: 123456789 };
+      milkyMicroStars = [];
+      const microStarCount = Math.max(120, Math.round(720 * MILKYWAY_TUNING.microStarDensity));
+      for (let i = 0; i < microStarCount; i++) {
+        const l = seededRand(seed) * 360;
+        const b = (seededRand(seed) + seededRand(seed) + seededRand(seed) - 1.5) * 7.5;
+        const twinkle = Math.pow(seededRand(seed), 2.2);
+        milkyMicroStars.push({ l, b, twinkle });
+      }
+    }
+
+    const samples = [];
+    for (let l = 0; l <= 360; l += 2) {
+      const eq = galacticToRaDec(l, 0);
+      const aa = raDecToAltAz(eq.ra, eq.dec, lat, lon, lst);
+      if (aa.alt < 0) continue;
+      const p = project(aa.alt, aa.az, centerAz, centerAlt, fov, cx, cy, radius);
+      if (!p) continue;
+      samples.push({ x: p.x, y: p.y, l });
+    }
+
+    if (samples.length > 1) {
+      milkyWayCtx.save();
+      milkyWayCtx.strokeStyle = 'rgba(155,190,225,0.26)';
+      milkyWayCtx.lineWidth = MILKYWAY_TUNING.baseArcWidth * (120 / fov);
+      milkyWayCtx.lineCap = 'round';
+      milkyWayCtx.lineJoin = 'round';
+      milkyWayCtx.beginPath();
+      milkyWayCtx.moveTo(samples[0].x, samples[0].y);
+      for (let i = 1; i < samples.length; i++) {
+        const dx = Math.abs(samples[i].x - samples[i - 1].x);
+        const dy = Math.abs(samples[i].y - samples[i - 1].y);
+        if (dx < 180 && dy < 180) {
+          milkyWayCtx.lineTo(samples[i].x, samples[i].y);
+        } else {
+          milkyWayCtx.moveTo(samples[i].x, samples[i].y);
+        }
+      }
+      milkyWayCtx.stroke();
+      milkyWayCtx.restore();
+
+      // Procedural cloud texture (cache-only), denser near galactic center
+      const sizeScale = (120 / fov);
+      for (let i = 0; i < samples.length; i++) {
+        const s = samples[i];
+        const h1 = hash01(s.l * 0.31 + i * 0.07);
+        if (h1 < 0.18) continue;
+
+        const coreDist = galacticCoreDistance(s.l);
+        const coreBoost = Math.exp(-(coreDist * coreDist) / (2 * 35 * 35));
+
+        const jitterR = (10 + 38 * h1 + 24 * coreBoost) * sizeScale;
+        const jitterA = hash01(s.l * 1.13 + 9.7) * Math.PI * 2;
+        const px = s.x + Math.cos(jitterA) * jitterR;
+        const py = s.y + Math.sin(jitterA) * jitterR;
+
+        const blobR = (14 + 34 * hash01(s.l * 0.57 + 3.1) + 26 * coreBoost) * sizeScale;
+        const alphaBase = 0.016 + 0.026 * hash01(s.l * 0.83 + 5.4) + 0.055 * coreBoost;
+        const alpha = alphaBase * MILKYWAY_TUNING.cloudStrength;
+
+        const rg = 145 + Math.round(30 * hash01(s.l * 0.23 + 2.2));
+        const gg = 170 + Math.round(30 * hash01(s.l * 0.27 + 4.1));
+        const bg = 210 + Math.round(35 * hash01(s.l * 0.29 + 7.9));
+
+        const g = milkyWayCtx.createRadialGradient(px, py, 0, px, py, blobR);
+        g.addColorStop(0, `rgba(${rg},${gg},${bg},${alpha.toFixed(3)})`);
+        g.addColorStop(0.5, `rgba(${rg},${gg},${bg},${(alpha * 0.45).toFixed(3)})`);
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        milkyWayCtx.fillStyle = g;
+        milkyWayCtx.fillRect(px - blobR, py - blobR, blobR * 2, blobR * 2);
+      }
+
+      // Subtle dark dust mottling
+      if (MILKYWAY_TUNING.dustStrength > 0.001) {
+        for (let i = 0; i < samples.length; i += 2) {
+          const s = samples[i];
+          const n = hash01(s.l * 0.91 + 12.7);
+          if (n < 0.58) continue;
+          const coreDist = galacticCoreDistance(s.l);
+          const coreBoost = Math.exp(-(coreDist * coreDist) / (2 * 42 * 42));
+          const r = (10 + 18 * n + 22 * coreBoost) * (120 / fov);
+          const a = (0.016 + 0.030 * n + 0.045 * coreBoost) * MILKYWAY_TUNING.dustStrength;
+          const g = milkyWayCtx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r);
+          g.addColorStop(0, `rgba(8,12,18,${a.toFixed(3)})`);
+          g.addColorStop(1, 'rgba(0,0,0,0)');
+          milkyWayCtx.fillStyle = g;
+          milkyWayCtx.fillRect(s.x - r, s.y - r, r * 2, r * 2);
+        }
+      }
+    }
+
+    // Tiny Milky Way microstars (cache-only)
+    for (const ms of milkyMicroStars) {
+      const eq = galacticToRaDec(ms.l, ms.b);
+      const aa = raDecToAltAz(eq.ra, eq.dec, lat, lon, lst);
+      if (aa.alt < 0) continue;
+      const p = project(aa.alt, aa.az, centerAz, centerAlt, fov, cx, cy, radius);
+      if (!p || p.x < -2 || p.x > W + 2 || p.y < -2 || p.y > H + 2) continue;
+
+      const coreDist = galacticCoreDistance(ms.l);
+      const coreBoost = Math.exp(-(coreDist * coreDist) / (2 * 38 * 38));
+      const starStrength = Math.max(0, MILKYWAY_TUNING.microStarDensity);
+      const alpha = (0.045 + 0.050 * starStrength) * (0.80 + 0.20 * ms.twinkle) * (0.90 + 0.10 * coreBoost);
+      milkyStarsCtx.fillStyle = `rgba(200,220,255,${Math.min(0.22, alpha).toFixed(3)})`;
+      milkyStarsCtx.fillRect(p.x, p.y, 1, 1);
+    }
+  }
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  const blurPx = MILKYWAY_TUNING.baseBlur * (120 / fov);
+  ctx.globalAlpha = MILKYWAY_TUNING.baseOpacity;
+  ctx.filter = `blur(${blurPx.toFixed(1)}px)`;
+  ctx.drawImage(milkyWayCanvas, 0, 0, W, H);
+  ctx.filter = 'none';
+
+  const starsAlpha = Math.min(0.85, 0.20 + 0.22 * MILKYWAY_TUNING.microStarDensity);
+  ctx.globalAlpha = starsAlpha;
+  ctx.drawImage(milkyStarsCanvas, 0, 0, W, H);
+  ctx.restore();
 }
 
 function drawHorizon(cx, cy, radius, lst) {
@@ -938,7 +1174,7 @@ function onMouseMove(e) {
     const dx = e.clientX - lastMX;
     const dy = e.clientY - lastMY;
     centerAz = (centerAz + dx * 0.3 + 360) % 360;
-    centerAlt = Math.max(-5, Math.min(90, centerAlt - dy * 0.3));
+    centerAlt = Math.max(-5, Math.min(60, centerAlt - dy * 0.3));
     lastMX = e.clientX;
     lastMY = e.clientY;
     render();
@@ -952,7 +1188,7 @@ function onMouseUp() { isDragging = false; }
 
 function onWheel(e) {
   e.preventDefault();
-  fov = Math.max(20, Math.min(100, fov + e.deltaY * 0.1));
+  fov = Math.max(20, Math.min(70, fov + e.deltaY * 0.1));
   render();
 }
 
@@ -980,7 +1216,7 @@ function onTouchMove(e) {
     const dx = e.touches[0].clientX - lastMX;
     const dy = e.touches[0].clientY - lastMY;
     centerAz = (centerAz + dx * 0.3 + 360) % 360;
-    centerAlt = Math.max(-5, Math.min(90, centerAlt - dy * 0.3));
+    centerAlt = Math.max(-5, Math.min(50, centerAlt - dy * 0.3));
     lastMX = e.touches[0].clientX;
     lastMY = e.touches[0].clientY;
     render();
@@ -988,7 +1224,7 @@ function onTouchMove(e) {
     const dx = e.touches[1].clientX - e.touches[0].clientX;
     const dy = e.touches[1].clientY - e.touches[0].clientY;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    fov = Math.max(20, Math.min(100, touchStartFov * (touchStartDist / dist)));
+    fov = Math.max(20, Math.min(70, touchStartFov * (touchStartDist / dist)));
     render();
   }
 }
@@ -1094,6 +1330,12 @@ function onMagSlider(val) {
 function toggleTemp() {
   showTemp = !showTemp;
   document.getElementById('btn-temp').classList.toggle('active', showTemp);
+  render();
+}
+
+function toggleMilkyWay() {
+  showMilkyWay = !showMilkyWay;
+  document.getElementById('btn-milkyway').classList.toggle('active', showMilkyWay);
   render();
 }
 
