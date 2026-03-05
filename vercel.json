@@ -1,7 +1,16 @@
 {
-  "functions": {
-    "api/**/*.js": {
-      "maxDuration": 30
+  "routes": [
+    {
+      "src": "/api/opensky/states",
+      "dest": "/api/opensky/states.js"
+    },
+    {
+      "src": "/api/(.*)",
+      "status": 404
+    },
+    {
+      "src": "/(.*)",
+      "status": 404
     }
-  }
+  ]
 }

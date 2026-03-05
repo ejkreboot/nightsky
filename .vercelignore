@@ -1,7 +1,0 @@
-# Deploy API only from this project.
-*
-!api/
-!api/opensky/
-!api/**
-!vercel.json
-!.vercelignore
