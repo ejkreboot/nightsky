@@ -1,0 +1,8 @@
+_DS_Store
+.env
+node_modules
+api
+.svelte-kit
+.vercel
+dist
+build
